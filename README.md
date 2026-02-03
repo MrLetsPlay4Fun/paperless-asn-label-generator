@@ -9,6 +9,10 @@ Kleines Desktop-GUI-Tool (Tkinter), das **ASN-Labels als PDF** erzeugt – wahlw
 
 > Hinweis: Inoffizielles Tool, nicht affiliated mit paperless-ngx.
 
+<p align="center">
+  <img src="assets/screenshot.png" alt="Screenshot der Anwendung" width="900">
+</p>
+
 ---
 
 ## Voraussetzungen
