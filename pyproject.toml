@@ -4,16 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "paperless-asn-label-generator"
-version = "0.1.0"
+version = "0.1.1"
 description = "GUI tool to generate ASN barcode/QR labels for paperless-ngx (A4/Avery L4731) with calibration."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [{ name = "MrLetsPlay4Fun" }]
 keywords = ["paperless-ngx", "labels", "asn", "qr", "barcode", "avery", "reportlab", "tkinter"]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent"
 ]
 
