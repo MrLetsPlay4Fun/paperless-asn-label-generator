@@ -1,6 +1,11 @@
 # paperless-ngx ASN Label Generator (GUI) – Avery L4731 / L4731REV
 
-GUI-Tool (Tkinter), das ASN-Labels als PDF erzeugt – QR oder Code128 – inkl. Kalibrierung (Offset & Pitch-Drift) für saubere Ausdrucke auf echten Etikettenbögen.
+Kleines Desktop-GUI-Tool (Tkinter), das **ASN-Labels als PDF** erzeugt – wahlweise **QR** oder **Code128** – speziell für **A4-Etikettenbögen (z.B. Avery Zweckform L4731 / L4731REV, 7×27)**.
+
+✅ Ideal, um in paperless-ngx sauber mit ASN-Barcodes zu arbeiten  
+✅ Mit **Kalibrierung** (Offset X/Y + Pitch-Drift) für exakte Druckausrichtung  
+✅ **Persistente Einstellungen**: Drucker-Kalibrierwerte werden automatisch gespeichert  
+✅ **Reset-Button**: “Config löschen” setzt alles auf Standardwerte zurück
 
 > Hinweis: Inoffizielles Tool, nicht affiliated mit paperless-ngx.
 
@@ -9,96 +14,115 @@ GUI-Tool (Tkinter), das ASN-Labels als PDF erzeugt – QR oder Code128 – inkl.
 ## Voraussetzungen
 
 - **Python 3.10+**
-- **Git** (nur nötig, wenn du direkt von GitHub installieren willst)
-- Auf **Linux** ggf. zusätzlich: **Tkinter** (siehe unten)
+- Optional: **Git** (nur wenn Installation direkt von GitHub erfolgt)
+- **Linux**: `python3-tk` (Tkinter GUI Paket)
 
 ---
 
 ## Installation & Start
 
-### Windows (empfohlen)
+> **Wichtig (Linux):** Viele Distributionen blockieren systemweite `pip3 install ...` Installationen (PEP 668).  
+> Nutze dort am besten **pipx** oder eine **virtuelle Umgebung**.
 
-#### 1) Python installieren
-- Lade Python von der offiziellen Seite.
-- **Wichtig:** Beim Installer unbedingt **„Add Python to PATH“** aktivieren.
+### Windows
 
-Prüfen:
+#### Empfohlen: pipx (sauber, isoliert)
+1) Python installieren (bei python.org) und **„Add Python to PATH“** aktivieren.  
+2) pipx installieren:
 ```bash
-python --version
-pip --version
+python -m pip install --upgrade pip
+python -m pip install pipx
+python -m pipx ensurepath
 ```
+Terminal neu öffnen.
 
-#### 2) Installation direkt von GitHub
+3) Installieren & starten:
 ```bash
-pip install git+https://github.com/DEINNAME/paperless-asn-label-generator
+pipx install git+https://github.com/MrLetsPlay4Fun/paperless-asn-label-generator.git
 paperless-asn-labels
 ```
 
-> Wenn `pip` meldet, dass `git` fehlt: Git für Windows installieren, dann nochmal versuchen.
+#### Alternative: Virtualenv
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install git+https://github.com/MrLetsPlay4Fun/paperless-asn-label-generator.git
+paperless-asn-labels
+```
 
 ---
 
 ### macOS
 
-#### 1) Python prüfen/ installieren
-Prüfen:
-```bash
-python3 --version
-pip3 --version
-```
-
-Falls Python fehlt oder zu alt ist, am einfachsten über Homebrew:
+#### Empfohlen: pipx
+1) (Optional) Python via Homebrew:
 ```bash
 brew install python
 ```
 
-#### 2) Installation direkt von GitHub
+2) pipx installieren:
 ```bash
-pip3 install git+https://github.com/DEINNAME/paperless-asn-label-generator
-paperless-asn-labels
+python3 -m pip install --upgrade pip
+python3 -m pip install pipx
+python3 -m pipx ensurepath
 ```
+Terminal neu öffnen.
 
-> Falls `paperless-asn-labels` nicht gefunden wird, starte einmal neu das Terminal oder nutze:
+3) Installieren & starten:
 ```bash
-python3 -m paperless_asn_label_generator
+pipx install git+https://github.com/MrLetsPlay4Fun/paperless-asn-label-generator.git
+paperless-asn-labels
 ```
 
 ---
 
-### Linux
+### Linux (Debian/Ubuntu/Pop!_OS)
 
-#### 1) Python + pip prüfen
+#### 1) Tkinter installieren (GUI)
 ```bash
-python3 --version
-pip3 --version
+sudo apt update
+sudo apt install -y python3-tk
 ```
 
-Falls nötig (Debian/Ubuntu):
+#### 2) Empfohlen: pipx installieren
 ```bash
-sudo apt-get update
-sudo apt-get install -y python3 python3-pip
+sudo apt install -y pipx
+pipx ensurepath
 ```
+Terminal neu öffnen.
 
-#### 2) Tkinter installieren (wichtig für GUI)
-Debian/Ubuntu:
+#### 3) Installieren & starten (GitHub)
 ```bash
-sudo apt-get install -y python3-tk
-```
-
-Fedora:
-```bash
-sudo dnf install -y python3-tkinter
-```
-
-Arch:
-```bash
-sudo pacman -S tk
-```
-
-#### 3) Installation direkt von GitHub
-```bash
-pip3 install git+https://github.com/DEINNAME/paperless-asn-label-generator
+pipx install git+https://github.com/MrLetsPlay4Fun/paperless-asn-label-generator.git
 paperless-asn-labels
+```
+
+#### Alternative: Virtuelle Umgebung (wenn du pipx nicht willst)
+```bash
+python3 -m venv ~/.venvs/paperless-asn
+source ~/.venvs/paperless-asn/bin/activate
+pip install --upgrade pip
+pip install git+https://github.com/MrLetsPlay4Fun/paperless-asn-label-generator.git
+paperless-asn-labels
+```
+
+---
+
+## Update
+
+### Wenn mit pipx installiert
+```bash
+pipx upgrade paperless-asn-labels
+```
+
+Falls das Paket unter pipx anders heißt:
+```bash
+pipx upgrade-all
+```
+
+### Wenn in einer venv installiert
+```bash
+pip install -U --force-reinstall git+https://github.com/MrLetsPlay4Fun/paperless-asn-label-generator.git
 ```
 
 ---
@@ -110,8 +134,21 @@ paperless-asn-labels
 - Führende Nullen einstellen (z.B. 7 → `ASN0000001`)
 - Menge als **Labels** oder **A4-Blätter**
 - Code-Typ: **QR** oder **CODE128**
-- Optional: Rahmen aktivieren (hilft beim Kalibrieren)
+- Optional: **Rahmen aktivieren** (hilft beim Kalibrieren)
 - „PDF erzeugen…“ → Datei speichern
+
+---
+
+## Gespeicherte Einstellungen (Config)
+
+Deine Kalibrierwerte & UI-Einstellungen werden automatisch gespeichert (persistente Config).  
+Der Speicherort ist:
+
+- **Linux:** `~/.config/paperless-ngx-asn-labels/config.json` (oder `$XDG_CONFIG_HOME/...`)
+- **macOS:** `~/Library/Application Support/paperless-ngx-asn-labels/config.json`
+- **Windows:** `%APPDATA%\paperless-ngx-asn-labels\config.json`
+
+Im Programm gibt es außerdem den Button **„Config löschen“**, der die Datei entfernt und auf Standardwerte zurücksetzt.
 
 ---
 
@@ -141,15 +178,11 @@ Wenn die Position nicht exakt passt:
 ## Entwicklung (Repo klonen & lokal starten)
 
 ```bash
-git clone https://github.com/DEINNAME/paperless-asn-label-generator
+git clone https://github.com/MrLetsPlay4Fun/paperless-asn-label-generator.git
 cd paperless-asn-label-generator
 
-# Virtuelle Umgebung
-python -m venv .venv
-# Windows:
-# .venv\Scripts\activate
-# macOS/Linux:
-# source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 
 pip install -e .
 paperless-asn-labels
