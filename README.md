@@ -158,4 +158,4 @@ paperless-asn-labels
 ---
 
 ## Lizenz
-MIT (siehe LICENSE)
+GNU AGPLv3 (siehe LICENSE)
