@@ -18,6 +18,8 @@ from __future__ import annotations
 import math
 import os
 import sys
+import json
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Literal, Tuple
 
@@ -197,37 +199,173 @@ def generate_pdf(
     c.save()
     return pages, current
 
+DEFAULT_SETTINGS = {
+    "start": "1",
+    "mode": "labels",
+    "count": str(AVERY_L4731.labels_per_page),
+    "pages": "1",
+    "prefix": "ASN",
+    "zeros": "7",
+    "kind": "QR",
+    "border": False,
+    # deine aktuellen Preset-Kalibrierwerte:
+    "off_x": "-4.5",
+    "off_y": "7.0",
+    "pitch_dx": "1.2",
+    "pitch_dy": "0.42",
+}
 
 class App(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master, padding=12)
         self.master = master
 
-        self.var_start = tk.StringVar(value="1")
-
-        # Quantity mode
-        self.var_mode = tk.StringVar(value="labels")  # "labels" or "pages"
-        self.var_count = tk.StringVar(value=str(AVERY_L4731.labels_per_page))
-        self.var_pages = tk.StringVar(value="1")
-
-        self.var_prefix = tk.StringVar(value="ASN")
-        self.var_zeros = tk.StringVar(value="7")
-        self.var_kind = tk.StringVar(value="QR")
-        self.var_border = tk.BooleanVar(value=False)
-
-        # NEW calibration vars (mm)
-        self.var_off_x = tk.StringVar(value="-4.5")
-        self.var_off_y = tk.StringVar(value="7.0")
-        self.var_pitch_dx = tk.StringVar(value="1.2")
-        self.var_pitch_dy = tk.StringVar(value="0.42")
+        self.var_start = tk.StringVar(value=DEFAULT_SETTINGS["start"])
+        self.var_mode = tk.StringVar(value=DEFAULT_SETTINGS["mode"])
+        self.var_count = tk.StringVar(value=DEFAULT_SETTINGS["count"])
+        self.var_pages = tk.StringVar(value=DEFAULT_SETTINGS["pages"])
+        self.var_prefix = tk.StringVar(value=DEFAULT_SETTINGS["prefix"])
+        self.var_zeros = tk.StringVar(value=DEFAULT_SETTINGS["zeros"])
+        self.var_kind = tk.StringVar(value=DEFAULT_SETTINGS["kind"])
+        self.var_border = tk.BooleanVar(value=DEFAULT_SETTINGS["border"])
+        self.var_off_x = tk.StringVar(value=DEFAULT_SETTINGS["off_x"])
+        self.var_off_y = tk.StringVar(value=DEFAULT_SETTINGS["off_y"])
+        self.var_pitch_dx = tk.StringVar(value=DEFAULT_SETTINGS["pitch_dx"])
+        self.var_pitch_dy = tk.StringVar(value=DEFAULT_SETTINGS["pitch_dy"])
 
         self._preview_imgtk: ImageTk.PhotoImage | None = None
         self._count_entry: ttk.Entry | None = None
         self._pages_entry: ttk.Entry | None = None
 
+        self._loading_settings = False
+        self._save_job = None
+
+        # 1) Laden (überschreibt Defaults, falls config existiert)
+        self._load_settings()
+
+        # UI bauen
         self._build_ui()
         self._apply_mode()
         self._update_preview()
+
+        # 2) Autosave aktivieren
+        self._install_autosave_traces()
+
+        self._build_ui()
+        self._apply_mode()
+        self._update_preview()
+
+
+    def _config_path(self) -> Path:
+        """
+        Cross-platform config path:
+        - Windows: %APPDATA%/paperless-ngx-asn-labels/config.json
+        - macOS: ~/Library/Application Support/paperless-ngx-asn-labels/config.json
+        - Linux: $XDG_CONFIG_HOME/paperless-ngx-asn-labels/config.json  (fallback ~/.config/...)
+        """
+        home = Path.home()
+
+        if os.name == "nt":
+            base = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
+        elif sys.platform == "darwin":
+            base = home / "Library" / "Application Support"
+        else:
+            base = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
+
+        return base / "paperless-ngx-asn-labels" / "config.json"
+
+    def _settings_to_dict(self) -> dict:
+        return {
+            "start": self.var_start.get(),
+            "mode": self.var_mode.get(),
+            "count": self.var_count.get(),
+            "pages": self.var_pages.get(),
+            "prefix": self.var_prefix.get(),
+            "zeros": self.var_zeros.get(),
+            "kind": self.var_kind.get(),
+            "border": bool(self.var_border.get()),
+            "off_x": self.var_off_x.get(),
+            "off_y": self.var_off_y.get(),
+            "pitch_dx": self.var_pitch_dx.get(),
+            "pitch_dy": self.var_pitch_dy.get(),
+        }
+
+    def _apply_settings_from_dict(self, d: dict) -> None:
+        # Beim Laden sollen keine Autosaves getriggert werden
+        self._loading_settings = True
+        try:
+            if "start" in d: self.var_start.set(str(d["start"]))
+            if "mode" in d: self.var_mode.set(str(d["mode"]))
+            if "count" in d: self.var_count.set(str(d["count"]))
+            if "pages" in d: self.var_pages.set(str(d["pages"]))
+            if "prefix" in d: self.var_prefix.set(str(d["prefix"]))
+            if "zeros" in d: self.var_zeros.set(str(d["zeros"]))
+            if "kind" in d: self.var_kind.set(str(d["kind"]))
+            if "border" in d: self.var_border.set(bool(d["border"]))
+            if "off_x" in d: self.var_off_x.set(str(d["off_x"]))
+            if "off_y" in d: self.var_off_y.set(str(d["off_y"]))
+            if "pitch_dx" in d: self.var_pitch_dx.set(str(d["pitch_dx"]))
+            if "pitch_dy" in d: self.var_pitch_dy.set(str(d["pitch_dy"]))
+        finally:
+            self._loading_settings = False
+
+    def _load_settings(self) -> None:
+        path = self._config_path()
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self._apply_settings_from_dict(data)
+        except Exception:
+            # bewusst still: fehlerhafte config soll GUI nicht killen
+            pass
+
+    def _save_settings_now(self) -> None:
+        if getattr(self, "_loading_settings", False):
+            return
+        path = self._config_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._settings_to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            # still ignorieren oder optional status zeigen
+            pass
+
+    def _schedule_save(self) -> None:
+        # Debounce: erst nach kurzer Pause speichern
+        if getattr(self, "_loading_settings", False):
+            return
+        if getattr(self, "_save_job", None) is not None:
+            try:
+                self.after_cancel(self._save_job)
+            except Exception:
+                pass
+        self._save_job = self.after(500, self._save_settings_now)
+
+    def _install_autosave_traces(self) -> None:
+        # alle Variablen bei Änderung -> save schedulen
+        vars_to_watch = [
+            self.var_start,
+            self.var_mode,
+            self.var_count,
+            self.var_pages,
+            self.var_prefix,
+            self.var_zeros,
+            self.var_kind,
+            self.var_border,
+            self.var_off_x,
+            self.var_off_y,
+            self.var_pitch_dx,
+            self.var_pitch_dy,
+        ]
+        for v in vars_to_watch:
+            try:
+                v.trace_add("write", lambda *_: self._schedule_save())
+            except Exception:
+                # fallback (sehr alte Tk-Versionen)
+                v.trace("w", lambda *_: self._schedule_save())
 
     def _build_ui(self) -> None:
         self.master.title("paperless-ngx ASN Label Generator (A4 / Avery L4731) – mit Kalibrierung")
@@ -317,6 +455,10 @@ class App(ttk.Frame):
 
         ttk.Button(btns, text="PDF erzeugen…", command=self.on_generate_pdf).grid(row=0, column=0, sticky="we", padx=(0, 6))
         ttk.Button(btns, text="Ordner öffnen", command=self.on_open_folder).grid(row=0, column=1, sticky="we", padx=(6, 0))
+
+        ttk.Button(btns, text="Config löschen", command=self.on_reset_config).grid(
+            row=1, column=0, columnspan=2, sticky="we", pady=(6, 0)
+        )
 
         self.lbl_status = ttk.Label(self, text="", foreground="#333")
         self.lbl_status.grid(row=1, column=0, columnspan=2, sticky="we", pady=(10, 0))
@@ -476,6 +618,35 @@ class App(ttk.Frame):
         except Exception:
             messagebox.showinfo("Info", f"Ordner: {folder}")
 
+    def on_reset_config(self) -> None:
+        # Nachfrage, damit niemand aus Versehen alles wegklickt
+        if not messagebox.askyesno(
+            "Einstellungen zurücksetzen",
+            "Gespeicherte Einstellungen (config.json) löschen und auf Standardwerte zurücksetzen?"
+        ):
+            return
+
+        path = self._config_path()
+
+        # 1) config.json löschen (wenn vorhanden)
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Konnte config nicht löschen:\n{path}\n\n{e}")
+            return
+
+        # 2) Defaults anwenden (ohne Autosave-Trigger-Chaos)
+        self._apply_settings_from_dict(DEFAULT_SETTINGS)
+
+        # UI/Preview aktualisieren
+        self._apply_mode()
+        self._update_preview()
+
+        # 3) Optional: Defaults direkt wieder speichern (damit nächster Start garantiert Default hat)
+        self._save_settings_now()
+
+        messagebox.showinfo("OK", f"Zurückgesetzt.\n\nConfig-Pfad:\n{path}")
 
 def main() -> None:
     root = tk.Tk()
