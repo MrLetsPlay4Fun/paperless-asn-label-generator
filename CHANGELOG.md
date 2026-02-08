@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5 - 2026-02-08
+### Changed
+- Startposition auf angebrochenem Bogen ist jetzt einstellbar (`1..189`), inklusive korrekter Seitenberechnung und Druckplatzierung.
+- Option nach PDF-Erzeugung eingeführt: `none`, `file` oder `folder` direkt öffnen.
+- Ordner/Datei-Öffnen ist plattformstabil über `subprocess` umgesetzt (ohne `os.system`), auch bei Sonderzeichen im Pfad.
+- Im Modus `A4 Blätter` wird jetzt exakt die gewählte Blattanzahl erzeugt (erstes Blatt ab Startposition auffüllen, kein zusätzlich angebrochenes Folgeblatt).
+
 ## 0.1.4 - 2026-02-08
 ### Changed
 - Vorschau für `CODE128` rendert jetzt als echter Barcode statt Platzhalter.

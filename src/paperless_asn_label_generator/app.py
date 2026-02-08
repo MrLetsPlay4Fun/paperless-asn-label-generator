@@ -19,6 +19,7 @@ import math
 import os
 import sys
 import json
+import subprocess
 from io import BytesIO
 from pathlib import Path
 from dataclasses import dataclass
@@ -209,6 +210,7 @@ def generate_pdf(
     offset_y_mm: float = 0.0,         # + moves up
     pitch_dx_mm: float = 0.0,         # added to pitch_x (distance between columns)
     pitch_dy_mm: float = 0.0,         # added to pitch_y (distance between rows)
+    start_position: int = 1,          # 1..labels_per_page (first label slot on first page)
 ) -> Tuple[int, int]:
     """
     Returns: (pages_generated, next_number)
@@ -221,10 +223,14 @@ def generate_pdf(
         raise ValueError("leading_zeros must be >= 0")
     if not prefix:
         raise ValueError("prefix must not be empty")
+    labels_per_page = layout.labels_per_page
+    if not (1 <= start_position <= labels_per_page):
+        raise ValueError(f"start_position must be between 1 and {labels_per_page}")
 
     _page_w, page_h = A4
-    labels_per_page = layout.labels_per_page
-    pages = math.ceil(count / labels_per_page)
+    first_page_capacity = labels_per_page - (start_position - 1)
+    remaining_after_first = max(0, count - first_page_capacity)
+    pages = 1 + math.ceil(remaining_after_first / labels_per_page)
 
     # Effective pitch + offsets (points)
     pitch_x = layout.pitch_x + (pitch_dx_mm * mm)
@@ -237,12 +243,16 @@ def generate_pdf(
     current = start_number
     remaining = count
 
-    for _ in range(pages):
-        n_this_page = min(remaining, labels_per_page)
+    for page_idx in range(pages):
+        first_slot = start_position if page_idx == 0 else 1
+        first_slot_zero_based = first_slot - 1
+        slots_available = labels_per_page - first_slot_zero_based
+        n_this_page = min(remaining, slots_available)
 
         for i in range(n_this_page):
-            r = i // layout.cols
-            col = i % layout.cols
+            slot = first_slot_zero_based + i
+            r = slot // layout.cols
+            col = slot % layout.cols
 
             x = layout.margin_left + col * pitch_x + off_x
             y = page_h - layout.margin_top - layout.label_h - r * pitch_y + off_y
@@ -252,8 +262,9 @@ def generate_pdf(
 
             current += 1
 
-        c.showPage()
         remaining -= n_this_page
+        if page_idx < pages - 1:
+            c.showPage()
 
     c.save()
     return pages, current
@@ -263,9 +274,11 @@ DEFAULT_SETTINGS = {
     "mode": "labels",
     "count": str(AVERY_L4731.labels_per_page),
     "pages": "1",
+    "start_pos": "1",
     "prefix": "ASN",
     "zeros": "7",
     "kind": "QR",
+    "post_open": "none",
     "border": False,
     # neutrale Kalibrierung für frische Installationen
     "off_x": "0.0",
@@ -291,9 +304,11 @@ class App(ttk.Frame):
         self.var_mode = tk.StringVar(value=DEFAULT_SETTINGS["mode"])
         self.var_count = tk.StringVar(value=DEFAULT_SETTINGS["count"])
         self.var_pages = tk.StringVar(value=DEFAULT_SETTINGS["pages"])
+        self.var_start_pos = tk.StringVar(value=DEFAULT_SETTINGS["start_pos"])
         self.var_prefix = tk.StringVar(value=DEFAULT_SETTINGS["prefix"])
         self.var_zeros = tk.StringVar(value=DEFAULT_SETTINGS["zeros"])
         self.var_kind = tk.StringVar(value=DEFAULT_SETTINGS["kind"])
+        self.var_post_open = tk.StringVar(value=DEFAULT_SETTINGS["post_open"])
         self.var_border = tk.BooleanVar(value=DEFAULT_SETTINGS["border"])
         self.var_off_x = tk.StringVar(value=DEFAULT_SETTINGS["off_x"])
         self.var_off_y = tk.StringVar(value=DEFAULT_SETTINGS["off_y"])
@@ -345,9 +360,11 @@ class App(ttk.Frame):
             "mode": self.var_mode.get(),
             "count": self.var_count.get(),
             "pages": self.var_pages.get(),
+            "start_pos": self.var_start_pos.get(),
             "prefix": self.var_prefix.get(),
             "zeros": self.var_zeros.get(),
             "kind": self.var_kind.get(),
+            "post_open": self.var_post_open.get(),
             "border": bool(self.var_border.get()),
             "off_x": self.var_off_x.get(),
             "off_y": self.var_off_y.get(),
@@ -382,9 +399,11 @@ class App(ttk.Frame):
             if "mode" in d: self.var_mode.set(str(d["mode"]))
             if "count" in d: self.var_count.set(str(d["count"]))
             if "pages" in d: self.var_pages.set(str(d["pages"]))
+            if "start_pos" in d: self.var_start_pos.set(str(d["start_pos"]))
             if "prefix" in d: self.var_prefix.set(str(d["prefix"]))
             if "zeros" in d: self.var_zeros.set(str(d["zeros"]))
             if "kind" in d: self.var_kind.set(str(d["kind"]))
+            if "post_open" in d: self.var_post_open.set(str(d["post_open"]))
             if "border" in d: self.var_border.set(bool(d["border"]))
             set_calibration_var("off_x", self.var_off_x)
             set_calibration_var("off_y", self.var_off_y)
@@ -437,9 +456,11 @@ class App(ttk.Frame):
             self.var_mode,
             self.var_count,
             self.var_pages,
+            self.var_start_pos,
             self.var_prefix,
             self.var_zeros,
             self.var_kind,
+            self.var_post_open,
             self.var_border,
             self.var_off_x,
             self.var_off_y,
@@ -488,20 +509,21 @@ class App(ttk.Frame):
 
         add_row("Anzahl Labels", self.var_count, 2, f"{AVERY_L4731.labels_per_page} Labels pro A4-Seite", store="count")
         add_row("Anzahl A4 Blätter", self.var_pages, 3, "z.B. 3 → erzeugt 3 Seiten", store="pages")
+        add_row("Startposition auf Bogen", self.var_start_pos, 4, f"1..{AVERY_L4731.labels_per_page} (z.B. 37 bei angebrochenem Bogen)")
 
-        add_row("Prefix", self.var_prefix, 4, "Muss zu PAPERLESS_CONSUMER_ASN_BARCODE_PREFIX passen")
-        add_row("Führende Nullen", self.var_zeros, 5, "z.B. 5 → ASN00001")
+        add_row("Prefix", self.var_prefix, 5, "Muss zu PAPERLESS_CONSUMER_ASN_BARCODE_PREFIX passen")
+        add_row("Führende Nullen", self.var_zeros, 6, "z.B. 5 → ASN00001")
 
-        ttk.Label(frm, text="Code-Typ").grid(row=6, column=0, sticky="w", padx=(10, 6), pady=6)
+        ttk.Label(frm, text="Code-Typ").grid(row=7, column=0, sticky="w", padx=(10, 6), pady=6)
         cmb = ttk.Combobox(frm, textvariable=self.var_kind, values=["QR", "CODE128"], state="readonly", width=12)
-        cmb.grid(row=6, column=1, sticky="w", padx=(0, 10), pady=6)
+        cmb.grid(row=7, column=1, sticky="w", padx=(0, 10), pady=6)
         cmb.bind("<<ComboboxSelected>>", lambda _e: self._update_preview())
 
         chk = ttk.Checkbutton(frm, text="Rahmen um Labels zeichnen (Kalibrierung)", variable=self.var_border, command=self._update_preview)
-        chk.grid(row=6, column=2, columnspan=2, sticky="w", padx=(0, 10), pady=6)
+        chk.grid(row=7, column=2, columnspan=2, sticky="w", padx=(0, 10), pady=6)
 
         cal = ttk.LabelFrame(frm, text="Kalibrierung (mm)")
-        cal.grid(row=7, column=0, columnspan=4, sticky="we", padx=10, pady=(10, 6))
+        cal.grid(row=8, column=0, columnspan=4, sticky="we", padx=10, pady=(10, 6))
         for i in range(6):
             cal.columnconfigure(i, weight=1)
 
@@ -553,6 +575,15 @@ class App(ttk.Frame):
         ttk.Button(btns, text="Config löschen", command=self.on_reset_config).grid(
             row=1, column=0, columnspan=2, sticky="we", pady=(6, 0)
         )
+        ttk.Label(btns, text="Nach PDF öffnen").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        cmb_open = ttk.Combobox(
+            btns,
+            textvariable=self.var_post_open,
+            values=["none", "file", "folder"],
+            state="readonly",
+            width=12,
+        )
+        cmb_open.grid(row=2, column=1, sticky="e", pady=(8, 0))
 
         self.lbl_status = ttk.Label(self, text="", foreground=STATUS_COLORS["info"], wraplength=900, justify="left")
         self.lbl_status.grid(row=1, column=0, columnspan=2, sticky="we", pady=(10, 0))
@@ -612,19 +643,34 @@ class App(ttk.Frame):
         except Exception:
             return None
 
+    def _start_position(self) -> int:
+        pos = self._parse_int(self.var_start_pos.get(), "Startposition auf Bogen")
+        if not (1 <= pos <= AVERY_L4731.labels_per_page):
+            raise ValueError(f"Startposition auf Bogen muss zwischen 1 und {AVERY_L4731.labels_per_page} liegen.")
+        return pos
+
+    def _pages_for_count(self, count: int, start_position: int) -> int:
+        first_page_capacity = AVERY_L4731.labels_per_page - (start_position - 1)
+        remaining_after_first = max(0, count - first_page_capacity)
+        return 1 + math.ceil(remaining_after_first / AVERY_L4731.labels_per_page)
+
     def _effective_count_and_pages(self) -> tuple[int, int]:
+        start_position = self._start_position()
         mode = self.var_mode.get()
         if mode == "pages":
             pages = self._parse_int(self.var_pages.get(), "Anzahl A4 Blätter")
             if pages <= 0:
                 raise ValueError("Anzahl A4 Blätter muss > 0 sein.")
-            count = pages * AVERY_L4731.labels_per_page
+            first_page_capacity = AVERY_L4731.labels_per_page - (start_position - 1)
+            # Im Seitenmodus exakt N Blätter erzeugen:
+            # erstes Blatt ab Startposition auffüllen, danach volle Blätter.
+            count = first_page_capacity + (pages - 1) * AVERY_L4731.labels_per_page
             return count, pages
         else:
             count = self._parse_int(self.var_count.get(), "Anzahl Labels")
             if count <= 0:
                 raise ValueError("Anzahl Labels muss > 0 sein.")
-            pages = math.ceil(count / AVERY_L4731.labels_per_page)
+            pages = self._pages_for_count(count, start_position)
             return count, pages
 
     def _current_text(self) -> str:
@@ -664,11 +710,12 @@ class App(ttk.Frame):
             self.preview.configure(image=self._preview_imgtk)
 
             count, pages = self._effective_count_and_pages()
+            start_pos = self._start_position()
             off_x_delta, off_y_delta, pdx_delta, pdy_delta = self._calibration_delta()
             off_x, off_y, pdx, pdy = self._calibration()
             self._set_status(
                 (
-                    f"Beispiel: {text} | {count} Labels ≈ {pages} Seiten"
+                    f"Beispiel: {text} | {count} Labels | Startposition {start_pos} | Ausgabe {pages} Seiten"
                     f" | Eingabe Offset({off_x_delta},{off_y_delta})mm PitchΔ({pdx_delta},{pdy_delta})mm"
                     f" | Effektiv Offset({off_x},{off_y})mm PitchΔ({pdx},{pdy})mm"
                 ),
@@ -725,6 +772,7 @@ class App(ttk.Frame):
                 raise ValueError("Prefix darf nicht leer sein.")
 
             count, _pages = self._effective_count_and_pages()
+            start_pos = self._start_position()
             kind: BarcodeKind = "QR" if self.var_kind.get() == "QR" else "CODE128"
             off_x, off_y, pdx, pdy = self._calibration()
 
@@ -751,27 +799,50 @@ class App(ttk.Frame):
                 offset_y_mm=off_y,
                 pitch_dx_mm=pdx,
                 pitch_dy_mm=pdy,
+                start_position=start_pos,
             )
 
             self.var_start.set(str(next_number))
             self._update_preview()
             self._set_status(
-                f"PDF: {out} | Seiten: {pages_generated} | Labels: {count} | Nächster Start: {next_number}",
+                f"PDF: {out} | Seiten: {pages_generated} | Labels: {count} | Startposition: {start_pos} | Nächster Start: {next_number}",
                 "success",
             )
+            try:
+                self._open_after_generate(out)
+            except Exception as e:
+                self._set_status(f"PDF erzeugt, aber Öffnen fehlgeschlagen: {e}", "warn")
         except Exception as e:
             self._set_status(str(e), "error")
             messagebox.showerror("Fehler", str(e))
 
+    def _open_path(self, path: str) -> None:
+        if os.name == "nt":
+            os.startfile(path)  # type: ignore[attr-defined]
+            return
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def _open_after_generate(self, output_pdf: str) -> None:
+        mode = self.var_post_open.get().strip().lower()
+        if mode == "none":
+            return
+        if mode == "file":
+            self._open_path(output_pdf)
+            return
+        if mode == "folder":
+            self._open_path(str(Path(output_pdf).resolve().parent))
+            return
+        raise ValueError(f"Ungültige Nach-PDF-Option: {mode}")
+
     def on_open_folder(self) -> None:
         folder = os.getcwd()
         try:
-            if os.name == "nt":
-                os.startfile(folder)  # type: ignore[attr-defined]
-            elif os.name == "posix":
-                cmd = "open" if sys.platform == "darwin" else "xdg-open"
-                os.system(f'{cmd} "{folder}"')
-        except Exception:
+            self._open_path(folder)
+        except Exception as e:
+            self._set_status(f"Ordner konnte nicht geöffnet werden: {e}", "warn")
             messagebox.showinfo("Info", f"Ordner: {folder}")
 
     def on_reset_config(self) -> None:

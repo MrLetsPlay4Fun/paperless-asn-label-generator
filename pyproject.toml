@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "paperless-asn-label-generator"
-version = "0.1.4"
+version = "0.1.5"
 description = "GUI tool to generate ASN barcode/QR labels for paperless-ngx (A4/Avery L4731) with calibration."
 readme = "README.md"
 requires-python = ">=3.10"
