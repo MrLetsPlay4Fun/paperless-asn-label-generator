@@ -19,6 +19,7 @@ import math
 import os
 import sys
 import json
+from io import BytesIO
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Literal, Tuple
@@ -30,15 +31,31 @@ from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm, cm
 from reportlab.lib.utils import ImageReader
-from reportlab.graphics.barcode import code128
+from reportlab.graphics import renderPM
+from reportlab.graphics.barcode import code128, createBarcodeDrawing
 
 import qrcode
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 
 from . import __version__
 
 
 BarcodeKind = Literal["QR", "CODE128"]
+StatusLevel = Literal["info", "success", "warn", "error"]
+
+STATUS_COLORS: dict[StatusLevel, str] = {
+    "info": "#2b2b2b",
+    "success": "#0b7d2b",
+    "warn": "#9a6700",
+    "error": "#b00020",
+}
+
+STATUS_PREFIX: dict[StatusLevel, str] = {
+    "info": "[INFO]",
+    "success": "[OK]",
+    "warn": "[WARN]",
+    "error": "[ERROR]",
+}
 
 
 @dataclass(frozen=True)
@@ -96,6 +113,46 @@ def make_qr_image(data: str, target_px: int) -> Image.Image:
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
     return img.resize((target_px, target_px), Image.Resampling.LANCZOS)
+
+
+def make_code128_preview_image(data: str, target_w: int, target_h: int) -> Image.Image:
+    try:
+        drawing = createBarcodeDrawing(
+            "Code128",
+            value=data,
+            barHeight=max(18.0, target_h * 0.55),
+            barWidth=0.24 * mm,
+            humanReadable=False,
+        )
+        png_bytes = renderPM.drawToString(drawing, fmt="PNG")
+        img = Image.open(BytesIO(png_bytes)).convert("RGB")
+        img.thumbnail((max(10, target_w), max(10, target_h)), Image.Resampling.LANCZOS)
+        return img
+    except Exception:
+        # Fallback: simple barcode-like preview, falls Render-Pipeline fehlt.
+        fallback = Image.new("RGB", (max(10, target_w), max(10, target_h)), "white")
+        draw = ImageDraw.Draw(fallback)
+        x = 2
+        while x < fallback.width - 2:
+            bar_w = 1 if (x // 3) % 2 == 0 else 2
+            draw.rectangle([x, 2, min(fallback.width - 2, x + bar_w), fallback.height - 3], fill="black")
+            x += bar_w + 2
+        return fallback
+
+
+def fit_preview_font(draw: ImageDraw.ImageDraw, text: str, max_w: int, max_h: int) -> ImageFont.ImageFont:
+    max_size = max(10, min(42, max_h))
+    for size in range(max_size, 9, -1):
+        try:
+            font = ImageFont.truetype("DejaVuSans.ttf", size)
+        except Exception:
+            break
+        bbox = draw.textbbox((0, 0), text, font=font)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        if w <= max_w and h <= max_h:
+            return font
+    return ImageFont.load_default()
 
 
 def draw_label(
@@ -249,7 +306,7 @@ class App(ttk.Frame):
 
         self._loading_settings = False
         self._save_job = None
-        self._pending_config_status: str | None = None
+        self._pending_config_status: tuple[str, StatusLevel] | None = None
 
         # 1) Laden (überschreibt Defaults, falls config existiert)
         self._load_settings()
@@ -344,10 +401,10 @@ class App(ttk.Frame):
                 if isinstance(data, dict):
                     self._apply_settings_from_dict(data)
                 else:
-                    self._set_config_status(f"⚠️ Config hat falsches Format, verwende Defaults: {path}")
+                    self._set_config_status(f"Config hat falsches Format, verwende Defaults: {path}", "warn")
         except Exception as e:
             # GUI bleibt benutzbar, Fehler wird aber sichtbar gemacht
-            self._set_config_status(f"⚠️ Config konnte nicht geladen werden ({path}): {e}")
+            self._set_config_status(f"Config konnte nicht geladen werden ({path}): {e}", "warn")
 
     def _save_settings_now(self) -> None:
         if getattr(self, "_loading_settings", False):
@@ -358,9 +415,9 @@ class App(ttk.Frame):
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self._settings_to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
             tmp.replace(path)
-            self._set_config_status("")
+            self._set_config_status("", "info")
         except Exception as e:
-            self._set_config_status(f"⚠️ Config konnte nicht gespeichert werden ({path}): {e}")
+            self._set_config_status(f"Config konnte nicht gespeichert werden ({path}): {e}", "error")
 
     def _schedule_save(self) -> None:
         # Debounce: erst nach kurzer Pause speichern
@@ -397,7 +454,7 @@ class App(ttk.Frame):
                 v.trace("w", lambda *_: self._schedule_save())
 
     def _build_ui(self) -> None:
-        self.master.title(f"paperless-ngx ASN Label Generator v{__version__}")
+        self.master.title(f"paperless-ngx ASN Label Generator v{__version__} (A4 / Avery L4731)")
         self.grid(sticky="nsew")
         self.master.columnconfigure(0, weight=1)
         self.master.rowconfigure(0, weight=1)
@@ -412,7 +469,9 @@ class App(ttk.Frame):
             ent = ttk.Entry(frm, textvariable=var, width=14)
             ent.grid(row=row, column=1, sticky="we", padx=(0, 10), pady=6)
             if hint:
-                ttk.Label(frm, text=hint, foreground="#555").grid(row=row, column=2, columnspan=2, sticky="w", padx=(0, 10), pady=6)
+                ttk.Label(frm, text=hint, foreground="#555", wraplength=250, justify="left").grid(
+                    row=row, column=2, columnspan=2, sticky="w", padx=(0, 10), pady=6
+                )
             ent.bind("<KeyRelease>", lambda _e: self._update_preview())
             if store == "count":
                 self._count_entry = ent
@@ -451,7 +510,9 @@ class App(ttk.Frame):
             e = ttk.Entry(cal, textvariable=var, width=10)
             e.grid(row=0, column=col + 1, sticky="we", padx=(0, 10), pady=6)
             e.bind("<KeyRelease>", lambda _e: self._update_preview())
-            ttk.Label(cal, text=hint, foreground="#555").grid(row=0, column=col + 2, sticky="w", padx=(0, 10), pady=6)
+            ttk.Label(cal, text=hint, foreground="#555", wraplength=130, justify="left").grid(
+                row=0, column=col + 2, sticky="w", padx=(0, 10), pady=6
+            )
 
         add_cal("Offset X", self.var_off_x, 0, "+ rechts")
         add_cal("Offset Y", self.var_off_y, 3, "+ hoch")
@@ -461,15 +522,19 @@ class App(ttk.Frame):
             e = ttk.Entry(cal, textvariable=var, width=10)
             e.grid(row=row, column=col + 1, sticky="we", padx=(0, 10), pady=6)
             e.bind("<KeyRelease>", lambda _e: self._update_preview())
-            ttk.Label(cal, text=hint, foreground="#555").grid(row=row, column=col + 2, sticky="w", padx=(0, 10), pady=6)
+            ttk.Label(cal, text=hint, foreground="#555", wraplength=130, justify="left").grid(
+                row=row, column=col + 2, sticky="w", padx=(0, 10), pady=6
+            )
 
         add_cal2("Spalten-Pitch Δ", self.var_pitch_dx, 1, 0, "→ drift links/rechts")
         add_cal2("Zeilen-Pitch Δ", self.var_pitch_dy, 1, 3, "→ top/bottom drift")
 
         right = ttk.Frame(self)
         right.grid(row=0, column=1, sticky="nsew", padx=(12, 0))
+        self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
+        right.columnconfigure(0, weight=1)
         right.rowconfigure(1, weight=1)
 
         ttk.Label(right, text="Vorschau (1 Label)").grid(row=0, column=0, sticky="w")
@@ -489,22 +554,36 @@ class App(ttk.Frame):
             row=1, column=0, columnspan=2, sticky="we", pady=(6, 0)
         )
 
-        self.lbl_status = ttk.Label(self, text="", foreground="#333")
+        self.lbl_status = ttk.Label(self, text="", foreground=STATUS_COLORS["info"], wraplength=900, justify="left")
         self.lbl_status.grid(row=1, column=0, columnspan=2, sticky="we", pady=(10, 0))
-        self.lbl_config_status = ttk.Label(self, text="", foreground="#b00020")
+        self.lbl_config_status = ttk.Label(self, text="", foreground=STATUS_COLORS["warn"], wraplength=900, justify="left")
         self.lbl_config_status.grid(row=2, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        self.bind("<Configure>", self._on_resize)
+        self.after_idle(self._on_resize)
 
-    def _set_config_status(self, message: str) -> None:
+    def _set_status(self, message: str, level: StatusLevel = "info") -> None:
+        text = f"{STATUS_PREFIX[level]} {message}" if message else ""
+        self.lbl_status.configure(text=text, foreground=STATUS_COLORS[level])
+
+    def _set_config_status(self, message: str, level: StatusLevel = "warn") -> None:
         lbl = getattr(self, "lbl_config_status", None)
         if lbl is None:
-            self._pending_config_status = message
+            self._pending_config_status = (message, level)
             return
-        lbl.configure(text=message)
-        self._pending_config_status = message
+        text = f"{STATUS_PREFIX[level]} {message}" if message else ""
+        lbl.configure(text=text, foreground=STATUS_COLORS[level])
+        self._pending_config_status = (message, level)
 
     def _flush_pending_config_status(self) -> None:
         if self._pending_config_status is not None:
-            self._set_config_status(self._pending_config_status)
+            message, level = self._pending_config_status
+            self._set_config_status(message, level)
+
+    def _on_resize(self, _event=None) -> None:
+        width = max(280, self.winfo_width() - 30)
+        for label in (getattr(self, "lbl_status", None), getattr(self, "lbl_config_status", None)):
+            if label is not None:
+                label.configure(wraplength=width)
 
     def _apply_mode(self) -> None:
         mode = self.var_mode.get()
@@ -587,43 +666,55 @@ class App(ttk.Frame):
             count, pages = self._effective_count_and_pages()
             off_x_delta, off_y_delta, pdx_delta, pdy_delta = self._calibration_delta()
             off_x, off_y, pdx, pdy = self._calibration()
-            self.lbl_status.configure(
-                text=(
-                    f"Beispiel: {text}  | {count} Labels ≈ {pages} Seiten"
-                    f"  | Eingabe Offset({off_x_delta},{off_y_delta})mm PitchΔ({pdx_delta},{pdy_delta})mm"
-                    f"  | Effektiv Offset({off_x},{off_y})mm PitchΔ({pdx},{pdy})mm"
-                )
+            self._set_status(
+                (
+                    f"Beispiel: {text} | {count} Labels ≈ {pages} Seiten"
+                    f" | Eingabe Offset({off_x_delta},{off_y_delta})mm PitchΔ({pdx_delta},{pdy_delta})mm"
+                    f" | Effektiv Offset({off_x},{off_y})mm PitchΔ({pdx},{pdy})mm"
+                ),
+                "info",
             )
         except Exception as e:
             self.preview.configure(image="")
-            self.lbl_status.configure(text=f"⚠️ {e}")
+            self._set_status(str(e), "warn")
 
     def _render_preview_image(self, text: str, kind: BarcodeKind, border: bool) -> Image.Image:
-        scale = 6
-        w = int((AVERY_L4731.label_w / mm) * scale * 10)
-        h = int((AVERY_L4731.label_h / mm) * scale * 10)
-        img = Image.new("RGB", (w, h), "white")
+        preview_w, preview_h = 440, 180
+        img = Image.new("RGB", (preview_w, preview_h), "white")
+        draw = ImageDraw.Draw(img)
+
+        pad = 12
+        code_box_h = int(preview_h * 0.76)
+        code_box_w = code_box_h
+        code_x = pad
+        code_y = (preview_h - code_box_h) // 2
 
         if kind == "QR":
-            size = int(h * 0.90)
-            qr = make_qr_image(text, max(120, size))
-            img.paste(qr, (10, (h - qr.size[1]) // 2))
+            qr = make_qr_image(text, max(100, code_box_h))
+            img.paste(qr, (code_x, code_y))
         else:
-            box = Image.new("RGB", (int(h * 0.90), int(h * 0.90)), "white")
-            img.paste(box, (10, (h - box.size[1]) // 2))
+            barcode = make_code128_preview_image(
+                text,
+                target_w=code_box_w,
+                target_h=int(code_box_h * 0.72),
+            )
+            bx = code_x + (code_box_w - barcode.size[0]) // 2
+            by = code_y + (code_box_h - barcode.size[1]) // 2
+            img.paste(barcode, (bx, by))
 
-        from PIL import ImageDraw, ImageFont
-        draw = ImageDraw.Draw(img)
-        try:
-            font = ImageFont.truetype("DejaVuSans.ttf", 18)
-        except Exception:
-            font = ImageFont.load_default()
-        draw.text((int(h * 0.95), (h - 18) // 2), text, fill="black", font=font)
+        text_x = code_x + code_box_w + pad
+        text_max_w = max(40, preview_w - text_x - pad)
+        text_max_h = max(20, preview_h - (2 * pad))
+        font = fit_preview_font(draw, text, text_max_w, text_max_h)
+        text_bbox = draw.textbbox((0, 0), text, font=font)
+        text_h = text_bbox[3] - text_bbox[1]
+        text_y = max(pad, (preview_h - text_h) // 2)
+        draw.text((text_x, text_y), text, fill="black", font=font)
 
         if border:
-            draw.rectangle([0, 0, w - 1, h - 1], outline="black", width=2)
+            draw.rectangle([0, 0, preview_w - 1, preview_h - 1], outline="black", width=2)
 
-        return img.resize((360, 160), Image.Resampling.LANCZOS)
+        return img
 
     def on_generate_pdf(self) -> None:
         try:
@@ -662,12 +753,14 @@ class App(ttk.Frame):
                 pitch_dy_mm=pdy,
             )
 
-            self.lbl_status.configure(
-                text=f"✅ PDF: {out}  | Seiten: {pages_generated}  | Labels: {count}  | Nächster Start: {next_number}"
-            )
             self.var_start.set(str(next_number))
             self._update_preview()
+            self._set_status(
+                f"PDF: {out} | Seiten: {pages_generated} | Labels: {count} | Nächster Start: {next_number}",
+                "success",
+            )
         except Exception as e:
+            self._set_status(str(e), "error")
             messagebox.showerror("Fehler", str(e))
 
     def on_open_folder(self) -> None:
@@ -708,6 +801,7 @@ class App(ttk.Frame):
 
         # 3) Optional: Defaults direkt wieder speichern (damit nächster Start garantiert Default hat)
         self._save_settings_now()
+        self._set_status("Einstellungen wurden auf Standardwerte zurückgesetzt.", "success")
 
         messagebox.showinfo("OK", f"Zurückgesetzt.\n\nConfig-Pfad:\n{path}")
 
@@ -721,7 +815,8 @@ def main() -> None:
         pass
 
     App(root)
-    root.minsize(900, 430)
+    root.geometry("1160x620")
+    root.minsize(900, 460)
     root.mainloop()
 
 

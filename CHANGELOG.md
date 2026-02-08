@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4 - 2026-02-08
+### Changed
+- Vorschau für `CODE128` rendert jetzt als echter Barcode statt Platzhalter.
+- Vorschau-Layout wurde neu ausbalanciert: QR kleiner, Text deutlich größer/lesbarer, kein Überlappen von CODE128 und Text.
+- Fensterbreite und Vorschaufläche wurden vergrößert, damit alle UI-Elemente und der Vorschau-Text vollständig sichtbar bleiben.
+- Statusmeldungen in der UI sind vereinheitlicht (`[INFO]`, `[OK]`, `[WARN]`, `[ERROR]`) und farblich klar getrennt.
+- Layout verhält sich auf kleineren Displays robuster (reduzierte `minsize`, bessere Spalten-Gewichtung, umbrochene Hilfstexte/Statuszeilen).
+
 ## 0.1.3 - 2026-02-08
 ### Changed
 - Kalibrierungs-Eingaben sind jetzt als sichtbare Delta-Werte ausgelegt (Default `0.0` in der UI), während intern weiterhin die Basiswerte genutzt werden.
