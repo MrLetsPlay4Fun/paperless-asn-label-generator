@@ -1,10 +1,13 @@
-# paperless-ngx ASN Label Generator (GUI) – Avery L4731 / L4731REV
+# paperless-ngx ASN Label Generator (GUI + CLI)
 
-Kleines Desktop-GUI-Tool (Tkinter), das **ASN-Labels als PDF** erzeugt – wahlweise **QR** oder **Code128** – speziell für **A4-Etikettenbögen (z.B. Avery Zweckform L4731 / L4731REV, 7×27)**.
+Kleines Tool (Tkinter + CLI), das **ASN-Labels als PDF** erzeugt – wahlweise **QR** oder **Code128** – für mehrere **A4-Etikettenlayouts**.
 
 ✅ Ideal, um in paperless-ngx sauber mit ASN-Barcodes zu arbeiten  
 ✅ Mit **Kalibrierung** (Offset X/Y + Pitch-Drift) für exakte Druckausrichtung  
 ✅ **Persistente Einstellungen**: Drucker-Kalibrierwerte werden automatisch gespeichert  
+✅ **Mehrere Layouts** (z. B. `L4731`, `L7160`)  
+✅ **Drucker-Profile** speichern/laden (ohne JSON-Edit)  
+✅ **CLI-Modus** für Automatisierung  
 ✅ **Reset-Button**: “Config löschen” setzt alles auf Standardwerte zurück
 
 > Hinweis: Inoffizielles Tool, nicht affiliated mit paperless-ngx.
@@ -134,12 +137,53 @@ pip install -U --force-reinstall git+https://github.com/MrLetsPlay4Fun/paperless
 ## Nutzung
 
 - Start-Nummer wählen (z.B. 1 oder 190)
+- Layout wählen (z. B. `L4731` oder `L7160`)
 - Prefix setzen (muss zu paperless-ngx passen)
 - Führende Nullen einstellen (z.B. 7 → `ASN0000001`)
 - Menge als **Labels** oder **A4-Blätter**
+- Optional: **Startposition auf Bogen** setzen (bei angebrochenem Blatt)
 - Code-Typ: **QR** oder **CODE128**
+- Optional: **Nach PDF öffnen** (`none`, `file`, `folder`)
 - Optional: **Rahmen aktivieren** (hilft beim Kalibrieren)
+- Optional: Profil speichern/laden/löschen (z. B. je Drucker)
 - „PDF erzeugen…“ → Datei speichern
+
+---
+
+## Profile (Drucker-Profile)
+
+Profile speichern deine aktuellen Einstellungen als Set (Layout, Kalibrierung, Startposition, Code-Typ usw.).
+
+- Standardprofil: **`Brother MFC-L2710DW`**
+- Buttons in der GUI:
+- **Profil speichern**: aktuelle Einstellungen unter neuem Namen speichern
+- **Profil laden**: gewähltes Profil aktivieren
+- **Profil löschen**: Profil entfernen (Standardprofil ist geschützt)
+- **Profile exportieren**: alle gespeicherten Profile als JSON-Datei exportieren
+
+---
+
+## CLI-Modus (Automatisierung)
+
+Du kannst PDFs ohne GUI erzeugen:
+
+```bash
+paperless-asn-labels --cli --output /tmp/asn.pdf --layout L4731 --count 30 --prefix ASN --zeros 7 --kind QR
+```
+
+Seitenmodus (exakte Blattanzahl):
+
+```bash
+paperless-asn-labels --cli --output /tmp/asn_pages.pdf --layout L7160 --pages 2 --start-position 5 --kind CODE128
+```
+
+Alle Optionen:
+
+```bash
+paperless-asn-labels --help
+```
+
+Hinweis: Wenn CLI-Optionen gesetzt sind (z. B. `--output`, `--count`, `--pages`), läuft das Tool automatisch im CLI-Modus.
 
 ---
 

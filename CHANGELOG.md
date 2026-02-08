@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6 - 2026-02-08
+### Changed
+- Mehrere Layout-Profile auswählbar (`L4731`, `L7160`) in GUI und CLI.
+- Profilverwaltung in der GUI hinzugefügt (Profil speichern/laden/löschen) ohne manuelles JSON-Editieren.
+- Standard-Profilname ist jetzt `Brother MFC-L2710DW` (alte `default`-Einträge werden automatisch migriert).
+- Profile können jetzt per Button als JSON exportiert werden.
+- Optionaler CLI-Modus für PDF-Erzeugung ohne GUI (`--cli ...`) inkl. Layoutwahl und Seiten-/Labelmodus.
+
 ## 0.1.5 - 2026-02-08
 ### Changed
 - Startposition auf angebrochenem Bogen ist jetzt einstellbar (`1..189`), inklusive korrekter Seitenberechnung und Druckplatzierung.

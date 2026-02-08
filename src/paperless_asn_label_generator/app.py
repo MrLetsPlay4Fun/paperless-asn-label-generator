@@ -19,6 +19,7 @@ import math
 import os
 import sys
 import json
+import argparse
 import subprocess
 from io import BytesIO
 from pathlib import Path
@@ -26,7 +27,7 @@ from dataclasses import dataclass
 from typing import Literal, Tuple
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.lib.pagesizes import A4
@@ -84,19 +85,36 @@ class SheetLayout:
         return self.label_h + self.gap_y
 
 
-# NOTE: Many shops/templates call this "L4731" (25.4 x 10mm, 7x27 = 189 labels).
-# If your sheet is slightly different, use calibration below.
-AVERY_L4731 = SheetLayout(
-    name="Avery Zweckform L4731 / L4731REV (7x27, 25.4mm x 10mm)",
-    cols=7,
-    rows=27,
-    label_w=25.4 * mm,
-    label_h=10.0 * mm,
-    gap_x=0.25 * cm,   # base guess (tweak with Δ if needed)
-    gap_y=0.0 * cm,    # base guess (tweak with Δ if needed)
-    margin_left=0.85 * cm,
-    margin_top=1.35 * cm,
-)
+LAYOUTS: dict[str, SheetLayout] = {
+    # NOTE: Many shops/templates call this "L4731" (25.4 x 10mm, 7x27 = 189 labels).
+    "L4731": SheetLayout(
+        name="Avery Zweckform L4731 / L4731REV (7x27, 25.4mm x 10mm)",
+        cols=7,
+        rows=27,
+        label_w=25.4 * mm,
+        label_h=10.0 * mm,
+        gap_x=0.25 * cm,
+        gap_y=0.0 * cm,
+        margin_left=0.85 * cm,
+        margin_top=1.35 * cm,
+    ),
+    # Alternative A4 layout with much larger labels.
+    "L7160": SheetLayout(
+        name="Avery L7160 (3x7, 63.5mm x 38.1mm)",
+        cols=3,
+        rows=7,
+        label_w=63.5 * mm,
+        label_h=38.1 * mm,
+        gap_x=2.5 * mm,
+        gap_y=0.0 * mm,
+        margin_left=6.5 * mm,
+        margin_top=15.2 * mm,
+    ),
+}
+
+DEFAULT_LAYOUT_KEY = "L4731"
+AVERY_L4731 = LAYOUTS[DEFAULT_LAYOUT_KEY]
+DEFAULT_PROFILE_NAME = "Brother MFC-L2710DW"
 
 
 def make_asn_text(prefix: str, number: int, leading_zeros: int) -> str:
@@ -154,6 +172,16 @@ def fit_preview_font(draw: ImageDraw.ImageDraw, text: str, max_w: int, max_h: in
         if w <= max_w and h <= max_h:
             return font
     return ImageFont.load_default()
+
+
+def open_path(path: str) -> None:
+    if os.name == "nt":
+        os.startfile(path)  # type: ignore[attr-defined]
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def draw_label(
@@ -270,9 +298,10 @@ def generate_pdf(
     return pages, current
 
 DEFAULT_SETTINGS = {
+    "layout": DEFAULT_LAYOUT_KEY,
     "start": "1",
     "mode": "labels",
-    "count": str(AVERY_L4731.labels_per_page),
+    "count": str(LAYOUTS[DEFAULT_LAYOUT_KEY].labels_per_page),
     "pages": "1",
     "start_pos": "1",
     "prefix": "ASN",
@@ -300,6 +329,8 @@ class App(ttk.Frame):
         super().__init__(master, padding=12)
         self.master = master
 
+        self.var_layout = tk.StringVar(value=DEFAULT_SETTINGS["layout"])
+        self.var_profile = tk.StringVar(value=DEFAULT_PROFILE_NAME)
         self.var_start = tk.StringVar(value=DEFAULT_SETTINGS["start"])
         self.var_mode = tk.StringVar(value=DEFAULT_SETTINGS["mode"])
         self.var_count = tk.StringVar(value=DEFAULT_SETTINGS["count"])
@@ -318,6 +349,8 @@ class App(ttk.Frame):
         self._preview_imgtk: ImageTk.PhotoImage | None = None
         self._count_entry: ttk.Entry | None = None
         self._pages_entry: ttk.Entry | None = None
+        self._profile_combo: ttk.Combobox | None = None
+        self._profiles: dict[str, dict] = {DEFAULT_PROFILE_NAME: dict(DEFAULT_SETTINGS)}
 
         self._loading_settings = False
         self._save_job = None
@@ -328,6 +361,7 @@ class App(ttk.Frame):
 
         # UI einmal bauen
         self._build_ui()
+        self._refresh_profile_combo()
         self._flush_pending_config_status()
         self._apply_mode()
         self._update_preview()
@@ -354,8 +388,9 @@ class App(ttk.Frame):
 
         return base / "paperless-ngx-asn-labels" / "config.json"
 
-    def _settings_to_dict(self) -> dict:
+    def _settings_snapshot(self) -> dict:
         return {
+            "layout": self.var_layout.get(),
             "start": self.var_start.get(),
             "mode": self.var_mode.get(),
             "count": self.var_count.get(),
@@ -373,10 +408,19 @@ class App(ttk.Frame):
             "calibration_mode": "delta",
         }
 
+    def _settings_to_dict(self) -> dict:
+        payload = self._settings_snapshot()
+        payload["profiles"] = self._profiles
+        payload["active_profile"] = self.var_profile.get()
+        return payload
+
     def _apply_settings_from_dict(self, d: dict) -> None:
         # Beim Laden sollen keine Autosaves getriggert werden
         self._loading_settings = True
         try:
+            if "layout" in d:
+                layout_key = str(d["layout"])
+                self.var_layout.set(layout_key if layout_key in LAYOUTS else DEFAULT_LAYOUT_KEY)
             calibration_mode = str(d.get("calibration_mode", "")).strip().lower()
             legacy_absolute = calibration_mode != "delta"
             if calibration_mode == "":
@@ -409,6 +453,7 @@ class App(ttk.Frame):
             set_calibration_var("off_y", self.var_off_y)
             set_calibration_var("pitch_dx", self.var_pitch_dx)
             set_calibration_var("pitch_dy", self.var_pitch_dy)
+            self._clamp_start_position()
         finally:
             self._loading_settings = False
 
@@ -418,6 +463,22 @@ class App(ttk.Frame):
             if path.exists():
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
+                    profiles = data.get("profiles")
+                    if isinstance(profiles, dict):
+                        self._profiles = {str(k): v for k, v in profiles.items() if isinstance(v, dict)}
+                    # Migration: alter fixer Name "default" -> neuer fixer Name.
+                    if "default" in self._profiles and DEFAULT_PROFILE_NAME not in self._profiles:
+                        self._profiles[DEFAULT_PROFILE_NAME] = self._profiles["default"]
+                    self._profiles.pop("default", None)
+                    if DEFAULT_PROFILE_NAME not in self._profiles:
+                        self._profiles[DEFAULT_PROFILE_NAME] = dict(DEFAULT_SETTINGS)
+                    active_profile = str(data.get("active_profile", DEFAULT_PROFILE_NAME))
+                    if active_profile == "default":
+                        active_profile = DEFAULT_PROFILE_NAME
+                    if active_profile in self._profiles:
+                        self.var_profile.set(active_profile)
+                    else:
+                        self.var_profile.set(DEFAULT_PROFILE_NAME)
                     self._apply_settings_from_dict(data)
                 else:
                     self._set_config_status(f"Config hat falsches Format, verwende Defaults: {path}", "warn")
@@ -452,6 +513,8 @@ class App(ttk.Frame):
     def _install_autosave_traces(self) -> None:
         # alle Variablen bei Änderung -> save schedulen
         vars_to_watch = [
+            self.var_layout,
+            self.var_profile,
             self.var_start,
             self.var_mode,
             self.var_count,
@@ -475,7 +538,7 @@ class App(ttk.Frame):
                 v.trace("w", lambda *_: self._schedule_save())
 
     def _build_ui(self) -> None:
-        self.master.title(f"paperless-ngx ASN Label Generator v{__version__} (A4 / Avery L4731)")
+        self.master.title(f"paperless-ngx ASN Label Generator v{__version__}")
         self.grid(sticky="nsew")
         self.master.columnconfigure(0, weight=1)
         self.master.rowconfigure(0, weight=1)
@@ -507,23 +570,34 @@ class App(ttk.Frame):
         ttk.Radiobutton(mode_box, text="Labels", value="labels", variable=self.var_mode, command=self._apply_mode).pack(side="left", padx=(0, 10))
         ttk.Radiobutton(mode_box, text="A4 Blätter", value="pages", variable=self.var_mode, command=self._apply_mode).pack(side="left")
 
-        add_row("Anzahl Labels", self.var_count, 2, f"{AVERY_L4731.labels_per_page} Labels pro A4-Seite", store="count")
-        add_row("Anzahl A4 Blätter", self.var_pages, 3, "z.B. 3 → erzeugt 3 Seiten", store="pages")
-        add_row("Startposition auf Bogen", self.var_start_pos, 4, f"1..{AVERY_L4731.labels_per_page} (z.B. 37 bei angebrochenem Bogen)")
+        ttk.Label(frm, text="Layout").grid(row=2, column=0, sticky="w", padx=(10, 6), pady=6)
+        layout_box = ttk.Combobox(
+            frm,
+            textvariable=self.var_layout,
+            values=list(LAYOUTS.keys()),
+            state="readonly",
+            width=16,
+        )
+        layout_box.grid(row=2, column=1, sticky="w", padx=(0, 10), pady=6)
+        layout_box.bind("<<ComboboxSelected>>", self._on_layout_changed)
 
-        add_row("Prefix", self.var_prefix, 5, "Muss zu PAPERLESS_CONSUMER_ASN_BARCODE_PREFIX passen")
-        add_row("Führende Nullen", self.var_zeros, 6, "z.B. 5 → ASN00001")
+        add_row("Anzahl Labels", self.var_count, 3, "Labels pro A4-Seite sind layoutabhängig", store="count")
+        add_row("Anzahl A4 Blätter", self.var_pages, 4, "z.B. 3 → erzeugt exakt 3 Seiten", store="pages")
+        add_row("Startposition auf Bogen", self.var_start_pos, 5, "1..Labels/Seite (abhängig vom Layout)")
 
-        ttk.Label(frm, text="Code-Typ").grid(row=7, column=0, sticky="w", padx=(10, 6), pady=6)
+        add_row("Prefix", self.var_prefix, 6, "Muss zu PAPERLESS_CONSUMER_ASN_BARCODE_PREFIX passen")
+        add_row("Führende Nullen", self.var_zeros, 7, "z.B. 5 → ASN00001")
+
+        ttk.Label(frm, text="Code-Typ").grid(row=8, column=0, sticky="w", padx=(10, 6), pady=6)
         cmb = ttk.Combobox(frm, textvariable=self.var_kind, values=["QR", "CODE128"], state="readonly", width=12)
-        cmb.grid(row=7, column=1, sticky="w", padx=(0, 10), pady=6)
+        cmb.grid(row=8, column=1, sticky="w", padx=(0, 10), pady=6)
         cmb.bind("<<ComboboxSelected>>", lambda _e: self._update_preview())
 
         chk = ttk.Checkbutton(frm, text="Rahmen um Labels zeichnen (Kalibrierung)", variable=self.var_border, command=self._update_preview)
-        chk.grid(row=7, column=2, columnspan=2, sticky="w", padx=(0, 10), pady=6)
+        chk.grid(row=8, column=2, columnspan=2, sticky="w", padx=(0, 10), pady=6)
 
         cal = ttk.LabelFrame(frm, text="Kalibrierung (mm)")
-        cal.grid(row=8, column=0, columnspan=4, sticky="we", padx=10, pady=(10, 6))
+        cal.grid(row=9, column=0, columnspan=4, sticky="we", padx=10, pady=(10, 6))
         for i in range(6):
             cal.columnconfigure(i, weight=1)
 
@@ -575,7 +649,7 @@ class App(ttk.Frame):
         ttk.Button(btns, text="Config löschen", command=self.on_reset_config).grid(
             row=1, column=0, columnspan=2, sticky="we", pady=(6, 0)
         )
-        ttk.Label(btns, text="Nach PDF öffnen").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(btns, text="Nach PDF-Erstellung öffnen").grid(row=2, column=0, sticky="w", pady=(8, 0))
         cmb_open = ttk.Combobox(
             btns,
             textvariable=self.var_post_open,
@@ -584,6 +658,21 @@ class App(ttk.Frame):
             width=12,
         )
         cmb_open.grid(row=2, column=1, sticky="e", pady=(8, 0))
+        ttk.Label(btns, text="Profil").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self._profile_combo = ttk.Combobox(
+            btns,
+            textvariable=self.var_profile,
+            values=[DEFAULT_PROFILE_NAME],
+            state="readonly",
+            width=24,
+        )
+        self._profile_combo.grid(row=3, column=1, sticky="e", pady=(8, 0))
+        ttk.Button(btns, text="Profil laden", command=self.on_load_profile).grid(row=4, column=0, sticky="we", pady=(6, 0), padx=(0, 6))
+        ttk.Button(btns, text="Profil speichern", command=self.on_save_profile).grid(row=4, column=1, sticky="we", pady=(6, 0), padx=(6, 0))
+        ttk.Button(btns, text="Profil löschen", command=self.on_delete_profile).grid(row=5, column=0, columnspan=2, sticky="we", pady=(6, 0))
+        ttk.Button(btns, text="Profile exportieren", command=self.on_export_profiles).grid(
+            row=6, column=0, columnspan=2, sticky="we", pady=(6, 0)
+        )
 
         self.lbl_status = ttk.Label(self, text="", foreground=STATUS_COLORS["info"], wraplength=900, justify="left")
         self.lbl_status.grid(row=1, column=0, columnspan=2, sticky="we", pady=(10, 0))
@@ -616,6 +705,104 @@ class App(ttk.Frame):
             if label is not None:
                 label.configure(wraplength=width)
 
+    def _layout_key(self) -> str:
+        key = self.var_layout.get().strip()
+        if key not in LAYOUTS:
+            raise ValueError(f"Unbekanntes Layout: {key}")
+        return key
+
+    def _layout(self) -> SheetLayout:
+        return LAYOUTS[self._layout_key()]
+
+    def _clamp_start_position(self) -> None:
+        try:
+            pos = int(self.var_start_pos.get().strip())
+        except Exception:
+            return
+        max_pos = self._layout().labels_per_page
+        if pos > max_pos:
+            self.var_start_pos.set(str(max_pos))
+        elif pos < 1:
+            self.var_start_pos.set("1")
+
+    def _on_layout_changed(self, _event=None) -> None:
+        try:
+            self._clamp_start_position()
+            self._update_preview()
+        except Exception as e:
+            self._set_status(str(e), "warn")
+
+    def _refresh_profile_combo(self) -> None:
+        if self._profile_combo is None:
+            return
+        names = sorted(self._profiles.keys())
+        self._profile_combo.configure(values=names)
+        if self.var_profile.get() not in self._profiles:
+            self.var_profile.set(DEFAULT_PROFILE_NAME)
+
+    def on_save_profile(self) -> None:
+        name = simpledialog.askstring("Profil speichern", "Profilname:")
+        if name is None:
+            return
+        name = name.strip()
+        if not name:
+            self._set_status("Profilname darf nicht leer sein.", "warn")
+            return
+        self._profiles[name] = self._settings_snapshot()
+        self.var_profile.set(name)
+        self._refresh_profile_combo()
+        self._save_settings_now()
+        self._set_status(f'Profil "{name}" gespeichert.', "success")
+
+    def on_load_profile(self) -> None:
+        name = self.var_profile.get().strip()
+        data = self._profiles.get(name)
+        if not isinstance(data, dict):
+            self._set_status(f'Profil "{name}" nicht gefunden.', "warn")
+            return
+        self._apply_settings_from_dict(data)
+        self._apply_mode()
+        self._update_preview()
+        self._save_settings_now()
+        self._set_status(f'Profil "{name}" geladen.', "success")
+
+    def on_delete_profile(self) -> None:
+        name = self.var_profile.get().strip()
+        if name == DEFAULT_PROFILE_NAME:
+            self._set_status(f'Profil "{DEFAULT_PROFILE_NAME}" kann nicht gelöscht werden.', "warn")
+            return
+        if name not in self._profiles:
+            self._set_status(f'Profil "{name}" nicht gefunden.', "warn")
+            return
+        if not messagebox.askyesno("Profil löschen", f'Profil "{name}" wirklich löschen?'):
+            return
+        del self._profiles[name]
+        self.var_profile.set(DEFAULT_PROFILE_NAME)
+        self._refresh_profile_combo()
+        self._save_settings_now()
+        self._set_status(f'Profil "{name}" gelöscht.', "success")
+
+    def on_export_profiles(self) -> None:
+        out = filedialog.asksaveasfilename(
+            title="Profile exportieren",
+            defaultextension=".json",
+            initialfile="paperless_asn_profiles.json",
+            filetypes=[("JSON", "*.json")],
+        )
+        if not out:
+            return
+        payload = {
+            "format": "paperless-asn-labels-profiles-v1",
+            "active_profile": self.var_profile.get(),
+            "profiles": self._profiles,
+        }
+        try:
+            Path(out).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            self._set_status(f"Profile exportiert: {out}", "success")
+        except Exception as e:
+            self._set_status(f"Profile konnten nicht exportiert werden: {e}", "error")
+            messagebox.showerror("Fehler", str(e))
+
     def _apply_mode(self) -> None:
         mode = self.var_mode.get()
         if self._count_entry is not None:
@@ -644,15 +831,17 @@ class App(ttk.Frame):
             return None
 
     def _start_position(self) -> int:
+        labels_per_page = self._layout().labels_per_page
         pos = self._parse_int(self.var_start_pos.get(), "Startposition auf Bogen")
-        if not (1 <= pos <= AVERY_L4731.labels_per_page):
-            raise ValueError(f"Startposition auf Bogen muss zwischen 1 und {AVERY_L4731.labels_per_page} liegen.")
+        if not (1 <= pos <= labels_per_page):
+            raise ValueError(f"Startposition auf Bogen muss zwischen 1 und {labels_per_page} liegen.")
         return pos
 
     def _pages_for_count(self, count: int, start_position: int) -> int:
-        first_page_capacity = AVERY_L4731.labels_per_page - (start_position - 1)
+        labels_per_page = self._layout().labels_per_page
+        first_page_capacity = labels_per_page - (start_position - 1)
         remaining_after_first = max(0, count - first_page_capacity)
-        return 1 + math.ceil(remaining_after_first / AVERY_L4731.labels_per_page)
+        return 1 + math.ceil(remaining_after_first / labels_per_page)
 
     def _effective_count_and_pages(self) -> tuple[int, int]:
         start_position = self._start_position()
@@ -661,10 +850,11 @@ class App(ttk.Frame):
             pages = self._parse_int(self.var_pages.get(), "Anzahl A4 Blätter")
             if pages <= 0:
                 raise ValueError("Anzahl A4 Blätter muss > 0 sein.")
-            first_page_capacity = AVERY_L4731.labels_per_page - (start_position - 1)
+            labels_per_page = self._layout().labels_per_page
+            first_page_capacity = labels_per_page - (start_position - 1)
             # Im Seitenmodus exakt N Blätter erzeugen:
             # erstes Blatt ab Startposition auffüllen, danach volle Blätter.
-            count = first_page_capacity + (pages - 1) * AVERY_L4731.labels_per_page
+            count = first_page_capacity + (pages - 1) * labels_per_page
             return count, pages
         else:
             count = self._parse_int(self.var_count.get(), "Anzahl Labels")
@@ -711,11 +901,13 @@ class App(ttk.Frame):
 
             count, pages = self._effective_count_and_pages()
             start_pos = self._start_position()
+            layout = self._layout()
             off_x_delta, off_y_delta, pdx_delta, pdy_delta = self._calibration_delta()
             off_x, off_y, pdx, pdy = self._calibration()
             self._set_status(
                 (
-                    f"Beispiel: {text} | {count} Labels | Startposition {start_pos} | Ausgabe {pages} Seiten"
+                    f"Beispiel: {text} | Layout {self._layout_key()} ({layout.labels_per_page}/Seite)"
+                    f" | {count} Labels | Startposition {start_pos} | Ausgabe {pages} Seiten"
                     f" | Eingabe Offset({off_x_delta},{off_y_delta})mm PitchΔ({pdx_delta},{pdy_delta})mm"
                     f" | Effektiv Offset({off_x},{off_y})mm PitchΔ({pdx},{pdy})mm"
                 ),
@@ -773,10 +965,11 @@ class App(ttk.Frame):
 
             count, _pages = self._effective_count_and_pages()
             start_pos = self._start_position()
+            layout = self._layout()
             kind: BarcodeKind = "QR" if self.var_kind.get() == "QR" else "CODE128"
             off_x, off_y, pdx, pdy = self._calibration()
 
-            default_name = f"asn_labels_{start}_{count}.pdf"
+            default_name = f"asn_labels_{self._layout_key().lower()}_{start}_{count}.pdf"
             out = filedialog.asksaveasfilename(
                 title="PDF speichern",
                 defaultextension=".pdf",
@@ -793,7 +986,7 @@ class App(ttk.Frame):
                 prefix=prefix,
                 leading_zeros=zeros,
                 kind=kind,
-                layout=AVERY_L4731,
+                layout=layout,
                 draw_border=self.var_border.get(),
                 offset_x_mm=off_x,
                 offset_y_mm=off_y,
@@ -805,7 +998,7 @@ class App(ttk.Frame):
             self.var_start.set(str(next_number))
             self._update_preview()
             self._set_status(
-                f"PDF: {out} | Seiten: {pages_generated} | Labels: {count} | Startposition: {start_pos} | Nächster Start: {next_number}",
+                f"PDF: {out} | Layout: {self._layout_key()} | Seiten: {pages_generated} | Labels: {count} | Startposition: {start_pos} | Nächster Start: {next_number}",
                 "success",
             )
             try:
@@ -817,13 +1010,7 @@ class App(ttk.Frame):
             messagebox.showerror("Fehler", str(e))
 
     def _open_path(self, path: str) -> None:
-        if os.name == "nt":
-            os.startfile(path)  # type: ignore[attr-defined]
-            return
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-        subprocess.Popen(["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        open_path(path)
 
     def _open_after_generate(self, output_pdf: str) -> None:
         mode = self.var_post_open.get().strip().lower()
@@ -864,6 +1051,9 @@ class App(ttk.Frame):
             return
 
         # 2) Defaults anwenden (ohne Autosave-Trigger-Chaos)
+        self._profiles = {DEFAULT_PROFILE_NAME: dict(DEFAULT_SETTINGS)}
+        self.var_profile.set(DEFAULT_PROFILE_NAME)
+        self._refresh_profile_combo()
         self._apply_settings_from_dict(DEFAULT_SETTINGS)
 
         # UI/Preview aktualisieren
@@ -876,7 +1066,7 @@ class App(ttk.Frame):
 
         messagebox.showinfo("OK", f"Zurückgesetzt.\n\nConfig-Pfad:\n{path}")
 
-def main() -> None:
+def _run_gui() -> int:
     root = tk.Tk()
     try:
         style = ttk.Style()
@@ -889,7 +1079,110 @@ def main() -> None:
     root.geometry("1160x620")
     root.minsize(900, 460)
     root.mainloop()
+    return 0
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="paperless-asn-labels",
+        description="ASN Label PDF Generator (GUI + optional CLI mode).",
+    )
+    p.add_argument("--cli", action="store_true", help="CLI-Modus verwenden (ohne GUI).")
+    p.add_argument("--output", help="Ausgabedatei (.pdf) für CLI.")
+    p.add_argument("--layout", choices=sorted(LAYOUTS.keys()), default=DEFAULT_LAYOUT_KEY, help="Layout-Profil (CLI).")
+    p.add_argument("--start", type=int, default=1, help="Start-Nummer (CLI).")
+    p.add_argument("--prefix", default="ASN", help="ASN Prefix (CLI).")
+    p.add_argument("--zeros", type=int, default=7, help="Führende Nullen (CLI).")
+    p.add_argument("--kind", choices=["QR", "CODE128"], default="QR", help="Barcode-Typ (CLI).")
+    p.add_argument("--start-position", type=int, default=1, help="Startposition auf dem ersten Blatt (CLI).")
+    p.add_argument("--count", type=int, help="Anzahl Labels (CLI).")
+    p.add_argument("--pages", type=int, help="Anzahl A4-Blätter (CLI, exakt).")
+    p.add_argument("--border", action="store_true", help="Labelrahmen zeichnen (CLI).")
+    p.add_argument("--offset-x", type=float, default=BASE_CALIBRATION_MM["off_x"], help="Effektiver Offset X in mm (CLI).")
+    p.add_argument("--offset-y", type=float, default=BASE_CALIBRATION_MM["off_y"], help="Effektiver Offset Y in mm (CLI).")
+    p.add_argument("--pitch-dx", type=float, default=BASE_CALIBRATION_MM["pitch_dx"], help="Effektiver Pitch Δ X in mm (CLI).")
+    p.add_argument("--pitch-dy", type=float, default=BASE_CALIBRATION_MM["pitch_dy"], help="Effektiver Pitch Δ Y in mm (CLI).")
+    p.add_argument("--open", choices=["none", "file", "folder"], default="none", help="Nach CLI-PDF öffnen.")
+    return p
+
+
+def _run_cli(args: argparse.Namespace) -> int:
+    if not args.output:
+        raise ValueError("Im CLI-Modus ist --output erforderlich.")
+    if args.count is not None and args.pages is not None:
+        raise ValueError("Bitte nur --count ODER --pages angeben, nicht beides.")
+
+    layout = LAYOUTS[args.layout]
+    if args.pages is not None:
+        if args.pages <= 0:
+            raise ValueError("--pages muss > 0 sein.")
+        first_page_capacity = layout.labels_per_page - (args.start_position - 1)
+        count = first_page_capacity + (args.pages - 1) * layout.labels_per_page
+    elif args.count is not None:
+        if args.count <= 0:
+            raise ValueError("--count muss > 0 sein.")
+        count = args.count
+    else:
+        count = layout.labels_per_page
+
+    pages_generated, next_number = generate_pdf(
+        output_path=args.output,
+        start_number=args.start,
+        count=count,
+        prefix=args.prefix,
+        leading_zeros=args.zeros,
+        kind="QR" if args.kind == "QR" else "CODE128",
+        layout=layout,
+        draw_border=bool(args.border),
+        offset_x_mm=args.offset_x,
+        offset_y_mm=args.offset_y,
+        pitch_dx_mm=args.pitch_dx,
+        pitch_dy_mm=args.pitch_dy,
+        start_position=args.start_position,
+    )
+    print(
+        f"OK: {args.output} | layout={args.layout} | pages={pages_generated} | labels={count} | next={next_number}"
+    )
+    if args.open == "file":
+        open_path(args.output)
+    elif args.open == "folder":
+        open_path(str(Path(args.output).resolve().parent))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+
+    cli_options_used = any(
+        [
+            args.output is not None,
+            args.count is not None,
+            args.pages is not None,
+            args.layout != DEFAULT_LAYOUT_KEY,
+            args.start != 1,
+            args.prefix != "ASN",
+            args.zeros != 7,
+            args.kind != "QR",
+            args.start_position != 1,
+            args.border,
+            args.offset_x != BASE_CALIBRATION_MM["off_x"],
+            args.offset_y != BASE_CALIBRATION_MM["off_y"],
+            args.pitch_dx != BASE_CALIBRATION_MM["pitch_dx"],
+            args.pitch_dy != BASE_CALIBRATION_MM["pitch_dy"],
+            args.open != "none",
+        ]
+    )
+
+    if args.cli or cli_options_used:
+        try:
+            return _run_cli(args)
+        except Exception as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+
+    return _run_gui()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
