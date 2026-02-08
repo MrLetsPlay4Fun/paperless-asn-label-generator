@@ -35,6 +35,8 @@ from reportlab.graphics.barcode import code128
 import qrcode
 from PIL import Image, ImageTk
 
+from . import __version__
+
 
 BarcodeKind = Literal["QR", "CODE128"]
 
@@ -208,11 +210,19 @@ DEFAULT_SETTINGS = {
     "zeros": "7",
     "kind": "QR",
     "border": False,
-    # deine aktuellen Preset-Kalibrierwerte:
-    "off_x": "-4.5",
-    "off_y": "7.0",
-    "pitch_dx": "1.2",
-    "pitch_dy": "0.42",
+    # neutrale Kalibrierung für frische Installationen
+    "off_x": "0.0",
+    "off_y": "0.0",
+    "pitch_dx": "0.0",
+    "pitch_dy": "0.0",
+}
+
+# Effektive Basiswerte, die beim Drucken intern immer addiert werden.
+BASE_CALIBRATION_MM = {
+    "off_x": -4.5,
+    "off_y": 7.0,
+    "pitch_dx": 1.2,
+    "pitch_dy": 0.42,
 }
 
 class App(ttk.Frame):
@@ -239,21 +249,19 @@ class App(ttk.Frame):
 
         self._loading_settings = False
         self._save_job = None
+        self._pending_config_status: str | None = None
 
         # 1) Laden (überschreibt Defaults, falls config existiert)
         self._load_settings()
 
-        # UI bauen
+        # UI einmal bauen
         self._build_ui()
+        self._flush_pending_config_status()
         self._apply_mode()
         self._update_preview()
 
         # 2) Autosave aktivieren
         self._install_autosave_traces()
-
-        self._build_ui()
-        self._apply_mode()
-        self._update_preview()
 
 
     def _config_path(self) -> Path:
@@ -288,12 +296,31 @@ class App(ttk.Frame):
             "off_y": self.var_off_y.get(),
             "pitch_dx": self.var_pitch_dx.get(),
             "pitch_dy": self.var_pitch_dy.get(),
+            "calibration_mode": "delta",
         }
 
     def _apply_settings_from_dict(self, d: dict) -> None:
         # Beim Laden sollen keine Autosaves getriggert werden
         self._loading_settings = True
         try:
+            calibration_mode = str(d.get("calibration_mode", "")).strip().lower()
+            legacy_absolute = calibration_mode != "delta"
+            if calibration_mode == "":
+                # Übergangsfall: Wenn alle Werte 0 sind (vorherige Zwischenversion), als Delta interpretieren.
+                parsed = [self._coerce_float(d.get(k)) for k in ("off_x", "off_y", "pitch_dx", "pitch_dy") if k in d]
+                if parsed and all(v is not None and abs(v) < 1e-9 for v in parsed):
+                    legacy_absolute = False
+
+            def set_calibration_var(key: str, var: tk.StringVar) -> None:
+                if key not in d:
+                    return
+                if legacy_absolute:
+                    absolute = self._coerce_float(d.get(key))
+                    if absolute is not None:
+                        var.set(str(absolute - BASE_CALIBRATION_MM[key]))
+                        return
+                var.set(str(d[key]))
+
             if "start" in d: self.var_start.set(str(d["start"]))
             if "mode" in d: self.var_mode.set(str(d["mode"]))
             if "count" in d: self.var_count.set(str(d["count"]))
@@ -302,10 +329,10 @@ class App(ttk.Frame):
             if "zeros" in d: self.var_zeros.set(str(d["zeros"]))
             if "kind" in d: self.var_kind.set(str(d["kind"]))
             if "border" in d: self.var_border.set(bool(d["border"]))
-            if "off_x" in d: self.var_off_x.set(str(d["off_x"]))
-            if "off_y" in d: self.var_off_y.set(str(d["off_y"]))
-            if "pitch_dx" in d: self.var_pitch_dx.set(str(d["pitch_dx"]))
-            if "pitch_dy" in d: self.var_pitch_dy.set(str(d["pitch_dy"]))
+            set_calibration_var("off_x", self.var_off_x)
+            set_calibration_var("off_y", self.var_off_y)
+            set_calibration_var("pitch_dx", self.var_pitch_dx)
+            set_calibration_var("pitch_dy", self.var_pitch_dy)
         finally:
             self._loading_settings = False
 
@@ -316,9 +343,11 @@ class App(ttk.Frame):
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     self._apply_settings_from_dict(data)
-        except Exception:
-            # bewusst still: fehlerhafte config soll GUI nicht killen
-            pass
+                else:
+                    self._set_config_status(f"⚠️ Config hat falsches Format, verwende Defaults: {path}")
+        except Exception as e:
+            # GUI bleibt benutzbar, Fehler wird aber sichtbar gemacht
+            self._set_config_status(f"⚠️ Config konnte nicht geladen werden ({path}): {e}")
 
     def _save_settings_now(self) -> None:
         if getattr(self, "_loading_settings", False):
@@ -329,9 +358,9 @@ class App(ttk.Frame):
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(self._settings_to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
             tmp.replace(path)
-        except Exception:
-            # still ignorieren oder optional status zeigen
-            pass
+            self._set_config_status("")
+        except Exception as e:
+            self._set_config_status(f"⚠️ Config konnte nicht gespeichert werden ({path}): {e}")
 
     def _schedule_save(self) -> None:
         # Debounce: erst nach kurzer Pause speichern
@@ -368,7 +397,7 @@ class App(ttk.Frame):
                 v.trace("w", lambda *_: self._schedule_save())
 
     def _build_ui(self) -> None:
-        self.master.title("paperless-ngx ASN Label Generator (A4 / Avery L4731) – mit Kalibrierung")
+        self.master.title(f"paperless-ngx ASN Label Generator v{__version__} (A4 / Avery L4731) - mit Kalibrierung")
         self.grid(sticky="nsew")
         self.master.columnconfigure(0, weight=1)
         self.master.rowconfigure(0, weight=1)
@@ -462,6 +491,20 @@ class App(ttk.Frame):
 
         self.lbl_status = ttk.Label(self, text="", foreground="#333")
         self.lbl_status.grid(row=1, column=0, columnspan=2, sticky="we", pady=(10, 0))
+        self.lbl_config_status = ttk.Label(self, text="", foreground="#b00020")
+        self.lbl_config_status.grid(row=2, column=0, columnspan=2, sticky="we", pady=(4, 0))
+
+    def _set_config_status(self, message: str) -> None:
+        lbl = getattr(self, "lbl_config_status", None)
+        if lbl is None:
+            self._pending_config_status = message
+            return
+        lbl.configure(text=message)
+        self._pending_config_status = message
+
+    def _flush_pending_config_status(self) -> None:
+        if self._pending_config_status is not None:
+            self._set_config_status(self._pending_config_status)
 
     def _apply_mode(self) -> None:
         mode = self.var_mode.get()
@@ -483,6 +526,12 @@ class App(ttk.Frame):
             return float(s.strip().replace(",", "."))
         except Exception:
             raise ValueError(f"{field} ist keine gültige Zahl (z.B. 0.2).")
+
+    def _coerce_float(self, value: object) -> float | None:
+        try:
+            return float(str(value).strip().replace(",", "."))
+        except Exception:
+            return None
 
     def _effective_count_and_pages(self) -> tuple[int, int]:
         mode = self.var_mode.get()
@@ -511,12 +560,21 @@ class App(ttk.Frame):
             raise ValueError("Führende Nullen muss >= 0 sein.")
         return make_asn_text(prefix, start, zeros)
 
-    def _calibration(self) -> tuple[float, float, float, float]:
+    def _calibration_delta(self) -> tuple[float, float, float, float]:
         off_x = self._parse_float(self.var_off_x.get(), "Offset X")
         off_y = self._parse_float(self.var_off_y.get(), "Offset Y")
         pdx = self._parse_float(self.var_pitch_dx.get(), "Spalten-Pitch Δ")
         pdy = self._parse_float(self.var_pitch_dy.get(), "Zeilen-Pitch Δ")
         return off_x, off_y, pdx, pdy
+
+    def _calibration(self) -> tuple[float, float, float, float]:
+        off_x_delta, off_y_delta, pdx_delta, pdy_delta = self._calibration_delta()
+        return (
+            BASE_CALIBRATION_MM["off_x"] + off_x_delta,
+            BASE_CALIBRATION_MM["off_y"] + off_y_delta,
+            BASE_CALIBRATION_MM["pitch_dx"] + pdx_delta,
+            BASE_CALIBRATION_MM["pitch_dy"] + pdy_delta,
+        )
 
     def _update_preview(self, *_args) -> None:
         try:
@@ -527,9 +585,14 @@ class App(ttk.Frame):
             self.preview.configure(image=self._preview_imgtk)
 
             count, pages = self._effective_count_and_pages()
+            off_x_delta, off_y_delta, pdx_delta, pdy_delta = self._calibration_delta()
             off_x, off_y, pdx, pdy = self._calibration()
             self.lbl_status.configure(
-                text=f"Beispiel: {text}  | {count} Labels ≈ {pages} Seiten  | Offset({off_x},{off_y})mm  PitchΔ({pdx},{pdy})mm"
+                text=(
+                    f"Beispiel: {text}  | {count} Labels ≈ {pages} Seiten"
+                    f"  | Eingabe Offset({off_x_delta},{off_y_delta})mm PitchΔ({pdx_delta},{pdy_delta})mm"
+                    f"  | Effektiv Offset({off_x},{off_y})mm PitchΔ({pdx},{pdy})mm"
+                )
             )
         except Exception as e:
             self.preview.configure(image="")
