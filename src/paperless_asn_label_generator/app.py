@@ -397,7 +397,7 @@ class App(ttk.Frame):
                 v.trace("w", lambda *_: self._schedule_save())
 
     def _build_ui(self) -> None:
-        self.master.title(f"paperless-ngx ASN Label Generator v{__version__} (A4 / Avery L4731) - mit Kalibrierung")
+        self.master.title(f"paperless-ngx ASN Label Generator v{__version__}")
         self.grid(sticky="nsew")
         self.master.columnconfigure(0, weight=1)
         self.master.rowconfigure(0, weight=1)
